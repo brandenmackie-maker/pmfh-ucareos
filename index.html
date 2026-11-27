@@ -23,32 +23,10 @@
     }
     #ucare-splash.is-ready { opacity: 0; pointer-events: none; }
     #ucare-stage-frame { width: 100vw; height: 100dvh; border: none; display: block; background: #070d19; }
-    #ucare-native-dock {
-      position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%);
-      z-index: 90; display: flex; align-items: center; gap: 7px;
-      padding: 6px 10px; border-radius: 999px;
-      background: rgba(7, 13, 25, 0.90); border: 1px solid rgba(56, 189, 248, 0.42);
-      backdrop-filter: blur(14px); box-shadow: 0 12px 32px rgba(0,0,0,0.55);
-    }
-    .uc-dock-btn {
-      display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
-      padding: 7px 12px; border-radius: 999px; border: 1px solid rgba(148,163,184,0.25);
-      background: rgba(15, 23, 42, 0.92); color: #f8fafc; font-size: 12px; font-weight: 800; cursor: pointer;
-    }
-    .uc-dock-btn.is-listening {
-      background: linear-gradient(135deg, #dc2626, #991b1b); border-color: #fca5a5;
-      box-shadow: 0 0 18px rgba(239, 68, 68, 0.55);
-    }
-    .uc-dock-portal { background: linear-gradient(135deg, #0284c7, #10b981); border: none; color: #fff; }
-    #ucare-voice-toast {
-      display: none; position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%);
-      z-index: 95; max-width: 92vw; width: 460px; padding: 11px 15px; border-radius: 14px;
-      background: rgba(10, 18, 34, 0.96); border: 1px solid #38bdf8; color: #e0f2fe;
-      font-size: 12.5px; font-weight: 700; line-height: 1.4; box-shadow: 0 16px 40px rgba(0,0,0,0.6);
-    }
   </style>
 </head>
 <body>
+  <!-- Clean 1-Second Launch Splash (Blue uCare Outside -> Full Uncluttered PMFH Cockpit Inside) -->
   <div id="ucare-splash">
     <img src="./icon-ucare.svg" alt="uCareOS" style="width:96px;height:96px;border-radius:22px;box-shadow:0 12px 34px rgba(56,189,248,0.35);"/>
     <div style="font-size:22px;font-weight:900;letter-spacing:-0.4px;">uCare<span style="color:#38bdf8;">OS</span></div>
@@ -63,131 +41,110 @@
     allow="microphone *; camera *; geolocation *; clipboard-write *; fullscreen *">
   </iframe>
 
-  <div id="ucare-voice-toast"></div>
-  <div id="ucare-native-dock">
-    <img id="uc-brand-toggle" src="./icon-pmfh-shield.svg" title="Tap to switch uCare / PMFH emblem" style="width:26px;height:26px;border-radius:7px;cursor:pointer;"/>
-    <button type="button" class="uc-dock-btn" id="uc-top-mic-btn">🎙️ Ambient Ear</button>
-    <button type="button" class="uc-dock-btn uc-dock-portal" id="uc-top-cam-btn">📸 Snap</button>
-    <button type="button" class="uc-dock-btn" id="uc-top-drop-btn">🌀 Drop</button>
-    <input type="file" id="uc-cam-input" accept="image/*" capture="environment" style="display:none;"/>
-    <input type="file" id="uc-file-input" multiple accept=".pdf,image/*,.txt,.doc,.docx" style="display:none;"/>
-  </div>
-
 <script>
 (function() {
-  const EXEC_URL = "https://script.google.com/macros/s/AKfycbxV_Zf7_r9-FtYAYyUZw6tq9gpT7uv7BS-ORfW8Px44F6crd_kudW2IL6d94qVN9K1p5Q/exec";
   const splash = document.getElementById('ucare-splash');
   const frame  = document.getElementById('ucare-stage-frame');
-  const toast  = document.getElementById('ucare-voice-toast');
-  const micBtn = document.getElementById('uc-top-mic-btn');
-  const brandImg = document.getElementById('uc-brand-toggle');
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
   frame.addEventListener('load', () => setTimeout(() => splash.classList.add('is-ready'), 250));
   setTimeout(() => splash.classList.add('is-ready'), 2600);
 
-  function showToast(msg, keepMs) {
-    toast.style.display = 'block';
-    toast.textContent = msg;
-    clearTimeout(window.__ucToastT);
-    if (keepMs !== 0) window.__ucToastT = setTimeout(() => { toast.style.display = 'none'; }, keepMs || 5500);
-  }
-
-  async function callBridge(action, payload) {
-    const res = await fetch(EXEC_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, payload })
-    });
-    return res.json();
-  }
-
-  let useShieldInDock = true;
-  brandImg.onclick = () => {
-    useShieldInDock = !useShieldInDock;
-    brandImg.src = useShieldInDock ? './icon-pmfh-shield.svg' : './icon-ucare.svg';
-    document.getElementById('dynamic-favicon').href = useShieldInDock ? './icon-ucare.svg' : './icon-pmfh-shield.svg';
-  };
-
-  let ambientOn = false, rec = null, speaking = false;
+  // Silent Top-Level Hardware Microphone Relay -> Controlled 100% by Inner Jarvis UI!
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let micMode = 'OFF'; // 'OFF' | 'SINGLE' | 'AMBIENT'
+  let rec = null;
+  let mutedWhileSpeaking = false;
 
-  function playReplyAudio(res) {
-    const uri = res && (res.audioDataUri || (res.audioBase64 ? ('data:audio/wav;base64,' + res.audioBase64) : ''));
-    if (!uri || res.skipAudio || res.quietModeActivated) return;
-    speaking = true;
-    const a = new Audio(uri);
-    a.onended = () => { speaking = false; };
-    a.onerror = () => { speaking = false; };
-    a.play().catch(() => { speaking = false; });
+  function sendToCockpit(payload) {
+    try {
+      if (frame && frame.contentWindow) {
+        frame.contentWindow.postMessage(Object.assign({ source: 'UCARE_TOP_SHELL' }, payload), '*');
+      }
+    } catch (e) {}
   }
 
-  function startLoop() {
-    if (!ambientOn || !SR) return;
+  function stopHardwareMic() {
+    micMode = 'OFF';
+    try { if (rec) { rec.onend = null; rec.stop(); } } catch (e) {}
+    rec = null;
+    sendToCockpit({ type: 'MIC_STATE', active: false, mode: 'OFF' });
+  }
+
+  function startHardwareMic(mode) {
+    if (!SR) {
+      sendToCockpit({ type: 'MIC_ERROR', error: 'speech-unsupported' });
+      return;
+    }
+    micMode = mode || 'AMBIENT';
+    try { if (rec) { rec.onend = null; rec.stop(); } } catch (e) {}
+
     rec = new SR();
-    rec.continuous = true;
+    rec.continuous = (micMode === 'AMBIENT');
     rec.interimResults = true;
     rec.lang = 'en-US';
-    rec.onresult = async (ev) => {
-      if (speaking) return;
-      let finalTxt = '', interim = '';
+
+    rec.onstart = () => {
+      sendToCockpit({ type: 'MIC_STATE', active: true, mode: micMode });
+    };
+
+    rec.onresult = (ev) => {
+      if (mutedWhileSpeaking) return;
+      let finalTxt = '', interimTxt = '';
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         if (ev.results[i].isFinal) finalTxt += ev.results[i][0].transcript + ' ';
-        else interim += ev.results[i][0].transcript;
+        else interimTxt += ev.results[i][0].transcript;
       }
-      if (interim) showToast('🎙️ Hearing: "' + interim + '"...', 0);
-      finalTxt = finalTxt.trim();
-      if (finalTxt.length >= 2) {
-        showToast('⚡ Jarvis thinking: "' + finalTxt + '"...', 0);
-        try {
-          const out = await callBridge('VOICE_TURN', { transcript: finalTxt, voicePersona: 'NEURAL_STUDIO:Aoede' });
-          showToast('🔊 Jarvis: ' + (out.spokenReply || out.speech || 'Done.'), 6500);
-          playReplyAudio(out);
-        } catch (err) {
-          showToast('⚠️ Bridge notice: ' + err.message, 4500);
-        }
+      if (interimTxt.trim()) {
+        sendToCockpit({ type: 'MIC_INTERIM', transcript: interimTxt.trim(), mode: micMode });
+      }
+      if (finalTxt.trim()) {
+        sendToCockpit({ type: 'MIC_FINAL', transcript: finalTxt.trim(), mode: micMode });
+        if (micMode === 'SINGLE') stopHardwareMic();
       }
     };
-    rec.onend = () => { if (ambientOn) setTimeout(startLoop, 250); };
+
+    rec.onerror = (ev) => {
+      const code = String((ev && ev.error) || '');
+      if (code === 'not-allowed' || code === 'service-not-allowed') {
+        micMode = 'OFF';
+        sendToCockpit({ type: 'MIC_ERROR', error: code });
+        return;
+      }
+    };
+
+    rec.onend = () => {
+      if (micMode === 'AMBIENT') {
+        setTimeout(() => { if (micMode === 'AMBIENT') startHardwareMic('AMBIENT'); }, 280);
+      } else {
+        sendToCockpit({ type: 'MIC_STATE', active: false, mode: 'OFF' });
+      }
+    };
+
     try { rec.start(); } catch (e) {}
   }
 
-  micBtn.onclick = () => {
-    if (!SR) return showToast('⚠️ Use Chrome or Safari for hardware Ambient Ear.', 4000);
-    ambientOn = !ambientOn;
-    micBtn.classList.toggle('is-listening', ambientOn);
-    micBtn.textContent = ambientOn ? '🔴 Ear Live' : '🎙️ Ambient Ear';
-    if (ambientOn) { showToast('🎙️ Top-Level Ambient Ear ON (Zero Google Frame Block!)', 3500); startLoop(); }
-    else { try { rec && rec.stop(); } catch (e) {} showToast('⏸️ Ambient Ear Paused', 2200); }
-  };
-
-  async function uploadFiles(fileList, tagPrefix) {
-    const files = Array.from(fileList || []);
-    if (!files.length) return;
-    const pkt = files.length > 1 ? ('PKT-' + Date.now().toString().slice(-5)) : '';
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i];
-      showToast('🌀 Beaming ' + (i + 1) + '/' + files.length + ': ' + f.name + '...', 0);
-      const b64 = await new Promise((res, rej) => {
-        const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f);
-      });
-      await callBridge('STAGE_HOPPER_FILE', {
-        fileName: (tagPrefix || '') + f.name,
-        mimeType: f.type || 'application/octet-stream',
-        base64Data: b64,
-        packetGroupId: pkt,
-        sourceDevice: 'TOP_LEVEL_PWA_SHELL'
-      });
+  // Listen for commands coming from your existing Jarvis buttons inside Apps Script!
+  window.addEventListener('message', (ev) => {
+    const d = ev && ev.data;
+    if (!d || d.target !== 'UCARE_TOP_SHELL') return;
+    if (d.cmd === 'PING_SHELL') {
+      sendToCockpit({ type: 'SHELL_READY', hasHardwareMic: !!SR, active: micMode !== 'OFF', mode: micMode });
+    } else if (d.cmd === 'START_AMBIENT') {
+      mutedWhileSpeaking = false;
+      startHardwareMic('AMBIENT');
+    } else if (d.cmd === 'START_SINGLE') {
+      mutedWhileSpeaking = false;
+      startHardwareMic('SINGLE');
+    } else if (d.cmd === 'STOP_MIC') {
+      stopHardwareMic();
+    } else if (d.cmd === 'JARVIS_SPEAKING') {
+      mutedWhileSpeaking = !!d.speaking; // Prevents Jarvis from hearing her own voice!
+    } else if (d.cmd === 'SET_FAVICON') {
+      const fav = document.getElementById('dynamic-favicon');
+      if (fav) fav.href = d.icon === 'shield' ? './icon-pmfh-shield.svg' : './icon-ucare.svg';
     }
-    showToast('✅ Beamed ' + files.length + ' file(s) into _00_RAW_HOPPER! Open Bay 9 (9A/9B) to Pre-Sort & Reconstruct.', 6500);
-  }
-
-  const camInp = document.getElementById('uc-cam-input');
-  const fileInp = document.getElementById('uc-file-input');
-  document.getElementById('uc-top-cam-btn').onclick = () => camInp.click();
-  document.getElementById('uc-top-drop-btn').onclick = () => fileInp.click();
-  camInp.onchange = () => uploadFiles(camInp.files, 'PhoneScan_');
-  fileInp.onchange = () => uploadFiles(fileInp.files, '');
+  });
 })();
 </script>
 </body>
