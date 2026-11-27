@@ -1,0 +1,25 @@
+{
+  "name": "uCareOS — PMFH Command Cockpit",
+  "short_name": "uCare",
+  "description": "uCareOS v3.8 Residential Care Platform — Paulette & Mattie's Family Home (Level 4F ARF)",
+  "start_url": "./index.html?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#041028",
+  "theme_color": "#041028",
+  "icons": [
+    {
+      "src": "./icon-ucare.svg",
+      "sizes": "192x192 512x512 any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon-pmfh-shield.svg",
+      "sizes": "192x192 512x512 any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
