@@ -39,7 +39,7 @@
     src="https://script.google.com/macros/s/AKfycbxV_Zf7_r9-FtYAYyUZw6tq9gpT7uv7BS-ORfW8Px44F6crd_kudW2IL6d94qVN9K1p5Q/exec"
     allow="microphone *; camera *; geolocation *; clipboard-write *; fullscreen *">
   </iframe>
-
+<script src="./jarvis-live-engine.js"></script>
   <script>
   (function() {
     const splash = document.getElementById('ucare-splash');
@@ -156,37 +156,74 @@
       }
     }
 
+    // ── uCareOS v4: 3-Gear Gemini 3.8 Live Engine Bridge ──
+    const liveEngine = window.JarvisLiveEngine
+      ? new window.JarvisLiveEngine({
+          sendToCockpit: (payload) => {
+            if (payload && payload.type === 'JARVIS_GEAR_STATE') {
+              micMode = payload.mode || 'OFF';
+              sendToCockpit({
+                type: 'MIC_STATE',
+                active: payload.gear !== 'OFF',
+                mode: micMode,
+                gear: payload.gear,
+                liveActive: !!payload.liveActive
+              });
+            }
+            sendToCockpit(payload);
+          },
+          idleTimeoutMs: 25000
+        })
+      : null;
+
     function startHardwareMic(mode) {
+      const target = mode || 'AMBIENT';
+      if (liveEngine) {
+        micMode = target === 'SINGLE' ? 'LIVE' : target;
+        liveEngine.setMode(target);
+        return;
+      }
       if (!SR) {
         sendToCockpit({ type: 'MIC_ERROR', error: 'speech-unsupported' });
         return;
       }
-      // If Ambient is already active and operator taps 🎙️, keep Ambient alive instead of killing it
       if (micMode === 'AMBIENT' && mode === 'SINGLE' && recRunning) {
         mutedWhileSpeaking = false;
         reportMicState(true);
         return;
       }
-      micMode = mode || 'AMBIENT';
+      micMode = target;
       reportMicState(true);
       launchRecognizer();
     }
 
-    // Accept both legacy target:'UCARE_TOP_SHELL' and v3.8.4 source:'UCARE_IFRAME'
+    // Accept both legacy target:'UCARE_TOP_SHELL' and v3.8.4+ source:'UCARE_IFRAME'
     window.addEventListener('message', (ev) => {
       const d = ev && ev.data;
       if (!d || (d.target !== 'UCARE_TOP_SHELL' && d.source !== 'UCARE_IFRAME')) return;
 
       if (d.cmd === 'PING_SHELL') {
-        sendToCockpit({ type: 'SHELL_READY', hasHardwareMic: !!SR, active: micMode !== 'OFF', mode: micMode });
+        sendToCockpit({
+          type: 'SHELL_READY',
+          hasHardwareMic: !!(SR || navigator.mediaDevices),
+          hasLiveAudio: !!liveEngine,
+          active: micMode !== 'OFF',
+          mode: micMode,
+          gear: liveEngine ? liveEngine.gear : 'OFF'
+        });
       } else if (d.cmd === 'START_AMBIENT') {
         mutedWhileSpeaking = false;
         startHardwareMic('AMBIENT');
-      } else if (d.cmd === 'START_SINGLE') {
+      } else if (d.cmd === 'START_SINGLE' || d.cmd === 'START_LIVE') {
         mutedWhileSpeaking = false;
-        startHardwareMic('SINGLE');
+        startHardwareMic(d.cmd === 'START_LIVE' ? 'LIVE' : 'SINGLE');
       } else if (d.cmd === 'STOP_MIC') {
+        if (liveEngine) liveEngine.setMode('OFF');
         stopHardwareMic();
+      } else if (d.cmd === 'LIVE_TOKEN_READY') {
+        if (liveEngine && d.envelope) liveEngine.ingestStandbyToken(d.envelope);
+      } else if (d.cmd === 'LIVE_TOOL_RESULT') {
+        if (liveEngine && d.payload) liveEngine.resolveCockpitToolResult(d.payload);
       } else if (d.cmd === 'JARVIS_SPEAKING') {
         mutedWhileSpeaking = !!d.speaking;
       } else if (d.cmd === 'SET_FAVICON') {

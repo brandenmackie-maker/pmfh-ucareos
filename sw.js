@@ -1,5 +1,13 @@
-const CACHE_NAME = 'ucareos-shell-v383';
-const SHELL_ASSETS = ['./', './index.html', './manifest.json', './icon-ucare.svg', './icon-pmfh-shield.svg'];
+const CACHE_NAME = 'ucareos-shell-v400-live';
+const SHELL_ASSETS = [
+  './',
+  './index.html',
+  './jarvis-audio-worklet.js',
+  './jarvis-live-engine.js',
+  './manifest.json',
+  './icon-ucare.svg',
+  './icon-pmfh-shield.svg'
+];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE_NAME).then((c) => c.addAll(SHELL_ASSETS)));
