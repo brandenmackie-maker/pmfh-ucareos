@@ -26,7 +26,6 @@
   </style>
 </head>
 <body>
-  <!-- Clean 1-Second Launch Splash (Blue uCare Outside -> Full Uncluttered PMFH Cockpit Inside) -->
   <div id="ucare-splash">
     <img src="./icon-ucare.svg" alt="uCareOS" style="width:96px;height:96px;border-radius:22px;box-shadow:0 12px 34px rgba(56,189,248,0.35);"/>
     <div style="font-size:22px;font-weight:900;letter-spacing:-0.4px;">uCare<span style="color:#38bdf8;">OS</span></div>
@@ -41,111 +40,161 @@
     allow="microphone *; camera *; geolocation *; clipboard-write *; fullscreen *">
   </iframe>
 
-<script>
-(function() {
-  const splash = document.getElementById('ucare-splash');
-  const frame  = document.getElementById('ucare-stage-frame');
+  <script>
+  (function() {
+    const splash = document.getElementById('ucare-splash');
+    const frame  = document.getElementById('ucare-stage-frame');
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
-  frame.addEventListener('load', () => setTimeout(() => splash.classList.add('is-ready'), 250));
-  setTimeout(() => splash.classList.add('is-ready'), 2600);
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+    frame.addEventListener('load', () => setTimeout(() => splash.classList.add('is-ready'), 250));
+    setTimeout(() => splash.classList.add('is-ready'), 2600);
 
-  // Silent Top-Level Hardware Microphone Relay -> Controlled 100% by Inner Jarvis UI!
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let micMode = 'OFF'; // 'OFF' | 'SINGLE' | 'AMBIENT'
-  let rec = null;
-  let mutedWhileSpeaking = false;
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let micMode = 'OFF'; // 'OFF' | 'SINGLE' | 'AMBIENT'
+    let lastReportedMode = 'OFF';
+    let rec = null;
+    let recRunning = false;
+    let restartTimer = null;
+    let mutedWhileSpeaking = false;
 
-  function sendToCockpit(payload) {
-    try {
-      if (frame && frame.contentWindow) {
-        frame.contentWindow.postMessage(Object.assign({ source: 'UCARE_TOP_SHELL' }, payload), '*');
-      }
-    } catch (e) {}
-  }
-
-  function stopHardwareMic() {
-    micMode = 'OFF';
-    try { if (rec) { rec.onend = null; rec.stop(); } } catch (e) {}
-    rec = null;
-    sendToCockpit({ type: 'MIC_STATE', active: false, mode: 'OFF' });
-  }
-
-  function startHardwareMic(mode) {
-    if (!SR) {
-      sendToCockpit({ type: 'MIC_ERROR', error: 'speech-unsupported' });
-      return;
+    function sendToCockpit(payload) {
+      try {
+        if (frame && frame.contentWindow) {
+          frame.contentWindow.postMessage(Object.assign({ source: 'UCARE_TOP_SHELL' }, payload), '*');
+        }
+      } catch (e) {}
     }
-    micMode = mode || 'AMBIENT';
-    try { if (rec) { rec.onend = null; rec.stop(); } } catch (e) {}
 
-    rec = new SR();
-    rec.continuous = (micMode === 'AMBIENT');
-    rec.interimResults = true;
-    rec.lang = 'en-US';
+    function reportMicState(force) {
+      if (!force && micMode === lastReportedMode) return;
+      lastReportedMode = micMode;
+      sendToCockpit({ type: 'MIC_STATE', active: micMode !== 'OFF', mode: micMode });
+    }
 
-    rec.onstart = () => {
-      sendToCockpit({ type: 'MIC_STATE', active: true, mode: micMode });
-    };
+    function scheduleAmbientRestart(delayMs) {
+      clearTimeout(restartTimer);
+      restartTimer = setTimeout(() => {
+        if (micMode === 'AMBIENT' && !recRunning) launchRecognizer();
+      }, delayMs || 140);
+    }
 
-    rec.onresult = (ev) => {
-      if (mutedWhileSpeaking) return;
-      let finalTxt = '', interimTxt = '';
-      for (let i = ev.resultIndex; i < ev.results.length; i++) {
-        if (ev.results[i].isFinal) finalTxt += ev.results[i][0].transcript + ' ';
-        else interimTxt += ev.results[i][0].transcript;
+    function stopHardwareMic() {
+      clearTimeout(restartTimer);
+      micMode = 'OFF';
+      recRunning = false;
+      try {
+        if (rec) {
+          rec.onend = null;
+          rec.onerror = null;
+          rec.stop();
+        }
+      } catch (e) {}
+      rec = null;
+      reportMicState(true);
+    }
+
+    function launchRecognizer() {
+      if (!SR || micMode === 'OFF') return;
+      clearTimeout(restartTimer);
+      try {
+        if (rec) {
+          rec.onend = null;
+          rec.onerror = null;
+          rec.stop();
+        }
+      } catch (e) {}
+
+      rec = new SR();
+      rec.continuous = (micMode === 'AMBIENT');
+      rec.interimResults = true;
+      rec.lang = 'en-US';
+
+      rec.onstart = () => {
+        recRunning = true;
+        reportMicState(false); // Suppresses UI blink during silent Ambient keep-alive cycles
+      };
+
+      rec.onresult = (ev) => {
+        if (mutedWhileSpeaking) return;
+        let finalTxt = '', interimTxt = '';
+        for (let i = ev.resultIndex; i < ev.results.length; i++) {
+          if (ev.results[i].isFinal) finalTxt += ev.results[i][0].transcript + ' ';
+          else interimTxt += ev.results[i][0].transcript;
+        }
+        if (interimTxt.trim()) {
+          sendToCockpit({ type: 'MIC_INTERIM', transcript: interimTxt.trim(), mode: micMode });
+        }
+        if (finalTxt.trim()) {
+          sendToCockpit({ type: 'MIC_FINAL', transcript: finalTxt.trim(), mode: micMode });
+          if (micMode === 'SINGLE') stopHardwareMic();
+        }
+      };
+
+      rec.onerror = (ev) => {
+        const code = String((ev && ev.error) || '');
+        if (code === 'not-allowed' || code === 'service-not-allowed') {
+          stopHardwareMic();
+          sendToCockpit({ type: 'MIC_ERROR', error: code });
+        }
+      };
+
+      rec.onend = () => {
+        recRunning = false;
+        if (micMode === 'AMBIENT') {
+          scheduleAmbientRestart(140);
+        } else {
+          micMode = 'OFF';
+          reportMicState(true);
+        }
+      };
+
+      try {
+        rec.start();
+      } catch (e) {
+        recRunning = false;
+        if (micMode === 'AMBIENT') scheduleAmbientRestart(350);
       }
-      if (interimTxt.trim()) {
-        sendToCockpit({ type: 'MIC_INTERIM', transcript: interimTxt.trim(), mode: micMode });
-      }
-      if (finalTxt.trim()) {
-        sendToCockpit({ type: 'MIC_FINAL', transcript: finalTxt.trim(), mode: micMode });
-        if (micMode === 'SINGLE') stopHardwareMic();
-      }
-    };
+    }
 
-    rec.onerror = (ev) => {
-      const code = String((ev && ev.error) || '');
-      if (code === 'not-allowed' || code === 'service-not-allowed') {
-        micMode = 'OFF';
-        sendToCockpit({ type: 'MIC_ERROR', error: code });
+    function startHardwareMic(mode) {
+      if (!SR) {
+        sendToCockpit({ type: 'MIC_ERROR', error: 'speech-unsupported' });
         return;
       }
-    };
-
-    rec.onend = () => {
-      if (micMode === 'AMBIENT') {
-        setTimeout(() => { if (micMode === 'AMBIENT') startHardwareMic('AMBIENT'); }, 280);
-      } else {
-        sendToCockpit({ type: 'MIC_STATE', active: false, mode: 'OFF' });
+      // If Ambient is already active and operator taps 🎙️, keep Ambient alive instead of killing it
+      if (micMode === 'AMBIENT' && mode === 'SINGLE' && recRunning) {
+        mutedWhileSpeaking = false;
+        reportMicState(true);
+        return;
       }
-    };
-
-    try { rec.start(); } catch (e) {}
-  }
-
-  // Listen for commands coming from your existing Jarvis buttons inside Apps Script!
-  window.addEventListener('message', (ev) => {
-    const d = ev && ev.data;
-    if (!d || d.target !== 'UCARE_TOP_SHELL') return;
-    if (d.cmd === 'PING_SHELL') {
-      sendToCockpit({ type: 'SHELL_READY', hasHardwareMic: !!SR, active: micMode !== 'OFF', mode: micMode });
-    } else if (d.cmd === 'START_AMBIENT') {
-      mutedWhileSpeaking = false;
-      startHardwareMic('AMBIENT');
-    } else if (d.cmd === 'START_SINGLE') {
-      mutedWhileSpeaking = false;
-      startHardwareMic('SINGLE');
-    } else if (d.cmd === 'STOP_MIC') {
-      stopHardwareMic();
-    } else if (d.cmd === 'JARVIS_SPEAKING') {
-      mutedWhileSpeaking = !!d.speaking; // Prevents Jarvis from hearing her own voice!
-    } else if (d.cmd === 'SET_FAVICON') {
-      const fav = document.getElementById('dynamic-favicon');
-      if (fav) fav.href = d.icon === 'shield' ? './icon-pmfh-shield.svg' : './icon-ucare.svg';
+      micMode = mode || 'AMBIENT';
+      reportMicState(true);
+      launchRecognizer();
     }
-  });
-})();
-</script>
+
+    // Accept both legacy target:'UCARE_TOP_SHELL' and v3.8.4 source:'UCARE_IFRAME'
+    window.addEventListener('message', (ev) => {
+      const d = ev && ev.data;
+      if (!d || (d.target !== 'UCARE_TOP_SHELL' && d.source !== 'UCARE_IFRAME')) return;
+
+      if (d.cmd === 'PING_SHELL') {
+        sendToCockpit({ type: 'SHELL_READY', hasHardwareMic: !!SR, active: micMode !== 'OFF', mode: micMode });
+      } else if (d.cmd === 'START_AMBIENT') {
+        mutedWhileSpeaking = false;
+        startHardwareMic('AMBIENT');
+      } else if (d.cmd === 'START_SINGLE') {
+        mutedWhileSpeaking = false;
+        startHardwareMic('SINGLE');
+      } else if (d.cmd === 'STOP_MIC') {
+        stopHardwareMic();
+      } else if (d.cmd === 'JARVIS_SPEAKING') {
+        mutedWhileSpeaking = !!d.speaking;
+      } else if (d.cmd === 'SET_FAVICON') {
+        const fav = document.getElementById('dynamic-favicon');
+        if (fav) fav.href = d.icon === 'shield' ? './icon-pmfh-shield.svg' : './icon-ucare.svg';
+      }
+    });
+  })();
+  </script>
 </body>
 </html>
